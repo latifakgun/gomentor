@@ -1,0 +1,29 @@
+# Build output and environments
+dist/
+build/
+*.spec
+.venv-build/
+__pycache__/
+*.pyc
+
+# USER DATA: games, briefs, videos, logs. These are personal records; in the
+# repository they would be useless, and a build given away would carry
+# someone else's games.
+games/
+katago-logs/
+katago-data/
+# data saved under the project's former name (imported once by legacy.py)
+maclar/
+katago-log/
+katago-veri/
+
+# KataGo weights and binaries do NOT go into the repository (354 MB). They live
+# as release assets and CI pulls them from there. Not Git LFS: every clone
+# would download 354 MB.
+katago/
+*.bin.gz
+ffmpeg.exe
+
+# Calibration output -- generated data, not source
+*.log
+Output/

@@ -1,0 +1,7 @@
+The basic problems in this folder (01-04) were written for GoMentor.
+Classic textbook shapes (straight three, bent three); not taken from any
+copyrighted collection. Same license as GoMentor.
+
+To add your own problem sets: copy .sgf files (subfolders are fine) into the
+tsumego/ folder in the data root, or use Problems > Add set in the app. Do
+not touch this bundled folder -- it may be read-only in an installed copy.

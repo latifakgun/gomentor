@@ -1,0 +1,6 @@
+# License texts must stay BYTE FOR BYTE: line-ending conversion changes the
+# bytes, and the md5 check in THIRD-PARTY-NOTICES.md (the canonical FSF GPLv3 /
+# LGPLv3 files) failed on a fresh clone. -text = never touch.
+LICENSES/** -text
+LICENSE -text
+sounds/LICENSE.txt -text

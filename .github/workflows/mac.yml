@@ -1,0 +1,106 @@
+name: macOS package
+
+# macos-latest is native arm64 (Apple Silicon) now. PyInstaller does not
+# cross-compile, so the .dmg can only be built here, not on a Windows machine.
+#
+# The KataGo binary and ffmpeg do NOT go into the package: KataGo has no
+# official macOS release and Homebrew's binary depends on /opt/homebrew dylibs.
+# The user runs `brew install katago ffmpeg` and the app finds them on PATH.
+# The weights are platform independent, so they go into the package.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version number (goes into the .dmg file name)"
+        default: "0.1.0"
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    # The repository setting is `default_workflow_permissions: read`, so
+    # creating a release failed with HTTP 403 "Resource not accessible by
+    # integration". The permission is granted to THIS job only, not repo-wide:
+    # contents write, the smallest set needed to create a release and upload assets.
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # CLEAN venv -- the reason is in windows.yml (the license audit asks the
+      # interpreter, and the runner image ships with extra packages installed).
+      - name: Dependencies (clean venv)
+        run: |
+          python -m venv .venv-build
+          .venv-build/bin/python -m pip install pillow edge-tts==7.3.1 pyinstaller "PySide6==6.9.2"
+
+      # Weights and cfg only. `analysis_example.cfg` is inside the Windows zip,
+      # but it is plain text and platform independent.
+      - name: Download engine assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p katago
+          gh release download engine-v1 --pattern "*.bin.gz" --dir katago --clobber
+          gh release download engine-v1 --pattern "katago-windows.zip" --dir /tmp --clobber
+          unzip -j -o /tmp/katago-windows.zip analysis_example.cfg -d katago
+          ls -la katago
+
+      - name: Tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          .venv-build/bin/python coach.py --selftest
+          .venv-build/bin/python coach.py --uitest
+
+      # When triggered by a tag `inputs.version` is EMPTY; with a fixed '0.1.0'
+      # the v0.2.0 tag produced a .dmg named 0.1.0. The Windows job derives it
+      # from the ref already; same here.
+      - name: Package
+        env:
+          GOMENTOR_KATAGO_DIR: ${{ github.workspace }}/katago
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          version="$INPUT_VERSION"
+          [ -z "$version" ] && version="${GITHUB_REF_NAME#v}"
+          export GOMENTOR_VERSION="${version:-0.1.0}"
+          echo "version: $GOMENTOR_VERSION"
+          .venv-build/bin/python build.py --empty
+
+      - name: Package check
+        run: |
+          test -d dist/GoMentor.app || { echo "no .app"; exit 1; }
+          test -f dist/GoMentor.app/Contents/MacOS/katago/kata1.bin.gz || { echo "no weights"; exit 1; }
+          test -f dist/GoMentor.app/Contents/MacOS/katago/humanv0.bin.gz || { echo "no HumanSL net"; exit 1; }
+          ls dist/*.dmg
+          du -sh dist/GoMentor.app dist/*.dmg
+
+      # continue-on-error: when the artifact storage quota (account-wide) killed
+      # this step, the release step was never reached -- the .dmg was built but
+      # never delivered. The real deliverable is the release; an artifact is a
+      # convenience that is deleted after 7 days.
+      - uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: GoMentor-mac
+          path: dist/*.dmg
+          retention-days: 7
+
+      # When triggered by a tag the output goes to the Release as an asset.
+      # Artifacts are deleted after 7 days and need a GitHub account to
+      # download -- a real release is what lets anyone download it.
+      - name: Upload to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md || true
+          gh release upload "$GITHUB_REF_NAME" dist/*.dmg --clobber

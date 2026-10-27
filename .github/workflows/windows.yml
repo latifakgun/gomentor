@@ -1,0 +1,131 @@
+name: Windows package
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version number (goes into the installer file name)"
+        default: "0.1.0"
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    # The repository setting is `default_workflow_permissions: read`, so
+    # creating a release failed with HTTP 403 "Resource not accessible by
+    # integration". The permission is granted to THIS job only, not repo-wide:
+    # contents write, the smallest set needed to create a release and upload assets.
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # PySide6 6.9.2 is PINNED: 6.11.2 did not load at all on the development
+      # machine ("DLL load failed while importing QtCore"). We know what works.
+      #
+      # CLEAN VENV: the same path build.py requires locally. The runner's system
+      # python ships with pipx and its dependencies (click, colorama, filelock,
+      # platformdirs, userpath, argcomplete) PREINSTALLED; the license audit
+      # counts "whatever is in this interpreter goes into the package", took
+      # them for missing notices and stopped the packaging. The venv holds only
+      # our dependencies: the audit stays strict and looks at the right set.
+      # Side benefit -- the distributed package is built the documented way.
+      - name: Dependencies (clean venv)
+        run: |
+          python -m venv .venv-build
+          .venv-build\Scripts\python -m pip install pillow edge-tts==7.3.1 pyinstaller "PySide6==6.9.2"
+
+      # The engine assets are NOT in the repository (369 MB). They come from our
+      # own release: no dependency on an outside site, and the build is reproducible.
+      - name: Download engine assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir katago
+          gh release download engine-v1 --dir katago --clobber
+          cd katago
+          tar -xf katago-windows.zip
+          del katago-windows.zip
+
+      # QT_QPA_PLATFORM=offscreen: the runner has no desktop session, and
+      # QApplication would fail to find a screen. The offscreen plugin really
+      # builds the widgets -- the test still means something, it just draws no pixels.
+      - name: Tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          .venv-build\Scripts\python coach.py --selftest
+          .venv-build\Scripts\python coach.py --uitest
+
+      # --empty: the data folder ships EMPTY. A local build copies the
+      # developer's games; a distributed build must not carry anyone's games.
+      - name: Package
+        env:
+          GOMENTOR_KATAGO_DIR: ${{ github.workspace }}\katago
+        run: .venv-build\Scripts\python build.py --empty
+
+      - name: Startup check
+        run: |
+          if (-not (Test-Path "dist\GoMentor\GoMentor.exe")) { exit 1 }
+          if (-not (Test-Path "dist\GoMentor\_internal\PySide6\plugins\platforms\qwindows.dll")) {
+            Write-Error "Qt platform plugin missing - the package will not open"
+            exit 1
+          }
+          if (-not (Test-Path "dist\GoMentor\_internal\PySide6\plugins\multimedia\ffmpegmediaplugin.dll")) {
+            Write-Error "Qt multimedia plugin missing - in-app video will not play"
+            exit 1
+          }
+          Get-ChildItem dist\GoMentor | Select-Object Name, Length
+
+      # continue-on-error: the artifact STORAGE QUOTA can fill up account-wide
+      # ("Artifact storage quota has been hit"), and when this step killed the
+      # job the release step was never reached. The real deliverable is the
+      # release; an artifact is a convenience that is deleted after 7 days.
+      - uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: GoMentor-windows
+          path: dist/GoMentor
+          retention-days: 7
+
+      # ISCC may or may not be on the runner image -- check and install if
+      # needed instead of finding out. The check is cheaper than the knowledge.
+      - name: Inno Setup
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            Write-Host "ISCC missing, installing"
+            choco install innosetup --no-progress -y
+          }
+          if (-not (Test-Path $iscc)) { Write-Error "ISCC still missing"; exit 1 }
+          $version = "${{ github.event.inputs.version }}"
+          if (-not $version) { $version = "$env:GITHUB_REF_NAME" -replace "^v", "" }
+          if (-not $version) { $version = "0.1.0" }
+          Write-Host "version: $version"
+          & $iscc "/DVersion=$version" installer.iss
+          Get-ChildItem Output | Select-Object Name, @{n="MB";e={[int]($_.Length/1MB)}}
+
+      - uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: GoMentor-setup
+          path: Output/*.exe
+          retention-days: 7
+
+      # When triggered by a tag the output goes to the Release as an asset.
+      # Artifacts are deleted after 7 days and need a GitHub account to
+      # download -- a real release is what lets anyone download it.
+      - name: Upload to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME --title $env:GITHUB_REF_NAME --notes-file RELEASE_NOTES.md 2>$null; $global:LASTEXITCODE = 0
+          gh release upload $env:GITHUB_REF_NAME (Get-Item Output\*.exe) --clobber

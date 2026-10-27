@@ -1,0 +1,3 @@
+The problems in this folder were generated for GoMentor: eye-space shapes,
+verified with an exhaustive-search solver, levels measured with humanv0.
+Nothing was taken from any collection. Same license as GoMentor (MIT).
